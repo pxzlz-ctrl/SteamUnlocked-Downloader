@@ -1,18 +1,19 @@
 import sys
+import os
 import webbrowser
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QListWidget, QVBoxLayout, QWidget, QLineEdit, QLabel, QPushButton, 
-                             QHBoxLayout, QMenu, QAction, QMessageBox, QListWidgetItem, QDialog, QDialogButtonBox)
+                             QHBoxLayout, QMenu, QAction, QMessageBox, QListWidgetItem, QDialog, QDialogButtonBox, QProgressBar)
 from PyQt5.QtCore import pyqtSignal, QThread, QObject, QTimer, Qt
 import json
-import os
+import requests
+from download import Downloader  # Ensure you have a Downloader class in download.py
 
 class GameDetailDialog(QDialog):
     def __init__(self, title, description, url, parent=None):
         super().__init__(parent)
-        self.title = title
-        self.url = url
         self.setWindowTitle("Game Details")
         self.setModal(True)
+        self.url = url
 
         self.setStyleSheet("""
             QDialog {
@@ -32,7 +33,16 @@ class GameDetailDialog(QDialog):
             QPushButton:hover {
                 background-color: #0056b3;
             }
+            QProgressBar {
+                background-color: #1E1E1E;
+                border: 2px solid #555555;
+                border-radius: 5px;
+                color: #FFFFFF;
+            }
         """)
+
+        self.downloader = None
+        self.download_thread = None
 
         layout = QVBoxLayout()
         title_label = QLabel(f"<b>{title}</b>")
@@ -42,10 +52,14 @@ class GameDetailDialog(QDialog):
         description_label = QLabel(description)
         layout.addWidget(description_label)
 
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setValue(0)
+        layout.addWidget(self.progress_bar)
+
         button_box = QDialogButtonBox()
-        download_button = QPushButton("Download")
-        download_button.clicked.connect(self.on_download_clicked)
-        button_box.addButton(download_button, QDialogButtonBox.AcceptRole)
+        self.download_button = QPushButton("Download")
+        self.download_button.clicked.connect(self.on_download_clicked)
+        button_box.addButton(self.download_button, QDialogButtonBox.AcceptRole)
         button_box.addButton(QPushButton("Close"), QDialogButtonBox.RejectRole)
         button_box.rejected.connect(self.reject)
         layout.addWidget(button_box)
@@ -53,8 +67,36 @@ class GameDetailDialog(QDialog):
         self.setLayout(layout)
 
     def on_download_clicked(self):
-        webbrowser.open(self.url)
-        QMessageBox.information(self, "Download", f"Opening download page for {self.title} in default browser.")
+        self.download_button.setEnabled(False)
+        self.progress_bar.setValue(0)
+
+        # Ensure the file name is valid and create the save path
+        file_name = os.path.basename(self.url.split('/')[-1])
+        save_directory = os.path.join(os.path.expanduser("~"), "SteamUnlockedLibrary")
+        save_path = os.path.join(save_directory, file_name)
+    
+        # Ensure the directory exists
+        os.makedirs(save_directory, exist_ok=True)
+
+        # Print the save_path for debugging
+        print(f"Save path: {save_path}")
+
+        # Initialize Downloader with the URL and save path
+        self.downloader = Downloader(self.url, save_path)
+        self.download_thread = QThread()
+    
+        self.downloader.moveToThread(self.download_thread)
+        self.downloader.progress.connect(self.progress_bar.setValue)
+        self.downloader.finished.connect(self.on_download_finished)
+
+        self.download_thread.started.connect(self.downloader.download)
+        self.download_thread.start()
+
+    def on_download_finished(self):
+        self.download_thread.quit()
+        self.download_thread.wait()
+        self.download_button.setEnabled(True)
+        QMessageBox.information(self, "Download Complete", "The download has completed successfully.")
 
 class ScraperWorker(QObject):
     games_fetched = pyqtSignal(list)
@@ -150,9 +192,9 @@ class MainWindow(QMainWindow):
                 cached_games = json.load(file)
         self.add_games(cached_games)
 
-    def add_games(self, game_titles_with_descriptions):
-        self.all_games = [title for title, url in game_titles_with_descriptions]
-        self.game_descriptions = dict(game_titles_with_descriptions)
+    def add_games(self, game_titles_with_urls):
+        self.all_games = [title for title, url in game_titles_with_urls]
+        self.game_descriptions = dict(game_titles_with_urls)
         self.apply_filter()
 
     def apply_filter(self):
@@ -170,9 +212,9 @@ class MainWindow(QMainWindow):
         if item:
             game_title = item.text()
             if game_title in self.game_descriptions:
-                description = self.game_descriptions[game_title]
+                url = self.game_descriptions[game_title]
                 menu = QMenu(self)
-                action = QAction(f"Description:\n{description}", self)
+                action = QAction(f"URL: {url}", self)
                 menu.addAction(action)
                 menu.exec_(self.game_list_widget.viewport().mapToGlobal(pos))
 
@@ -184,7 +226,7 @@ class MainWindow(QMainWindow):
         dialog.exec_()
 
     def check_and_add_new_games(self, new_games):
-        existing_titles = {title for title, url in self.all_games}
+        existing_titles = set(self.all_games)
         for title, url in new_games:
             if title not in existing_titles:
                 self.all_games.append(title)
