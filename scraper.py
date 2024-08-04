@@ -33,12 +33,6 @@ def get_game_list(callback, driver_path, url):
         # Get the page source
         page_source = driver.page_source
 
-        # Save the page source to a file
-        with open("page_source.html", "w", encoding="utf-8") as file:
-            file.write(page_source)
-
-        print("Page source saved to 'page_source.html'")
-
         # Process the page source with BeautifulSoup
         soup = BeautifulSoup(page_source, "html.parser")
         game_list_element = soup.select_one('#main-wrapper > div > div > div > div:nth-child(1) > div > div:nth-child(3) > ul')
@@ -50,8 +44,9 @@ def get_game_list(callback, driver_path, url):
                 url = a_tag['href']
                 games.append((title, url))
 
-            new_cache_file = update_game_list(games)
-            compare_with_cached_games(new_cache_file, callback)
+            # Optionally update cached games
+            update_game_list(games)
+            callback(games)
         else:
             print("Game list element not found in page source.")
 
@@ -60,39 +55,45 @@ def get_game_list(callback, driver_path, url):
     finally:
         driver.quit()
 
-def update_game_list(new_games):
-    # Generate a random 5-letter and number combination for the new cache file name
-    random_suffix = ''.join(random.choices(string.ascii_letters + string.digits, k=5))
-    new_cache_file = f"list_{random_suffix}.json"
+def generate_random_filename():
+    return f"list_{''.join(random.choices(string.ascii_letters + string.digits, k=5))}.json"
 
+def compare_and_delete_files(new_file, cached_file):
+    with open(new_file, "r", encoding="utf-8") as new_f, open(cached_file, "r", encoding="utf-8") as cached_f:
+        new_games = json.load(new_f)
+        cached_games = json.load(cached_f)
+
+    new_titles = {game[0] for game in new_games}
+    cached_titles = {game[0] for game in cached_games}
+
+    added_games = new_titles - cached_titles
+
+    if added_games:
+        print(f"New games added: {added_games}")
+
+    # Delete the temporary file
+    os.remove(new_file)
+
+def update_game_list(new_games):
+    cached_file = "cached_games.json"
+    new_file = generate_random_filename()
+
+    with open(new_file, "w", encoding="utf-8") as file:
+        json.dump(new_games, file, indent=4)
+
+    if os.path.exists(cached_file):
+        compare_and_delete_files(new_file, cached_file)
+
+    # Sort games alphabetically by title and save to cache
     sorted_games = sorted(new_games, key=lambda x: x[0])
-    with open(new_cache_file, "w", encoding="utf-8") as file:
+    with open(cached_file, "w", encoding="utf-8") as file:
         json.dump(sorted_games, file, indent=4)
-    
-    return new_cache_file
 
 def load_cached_games():
     if os.path.exists("cached_games.json"):
         with open("cached_games.json", "r", encoding="utf-8") as file:
             return json.load(file)
     return []
-
-def compare_with_cached_games(new_cache_file, callback):
-    cached_games = load_cached_games()
-    new_games = []
-
-    with open(new_cache_file, "r", encoding="utf-8") as file:
-        new_games = json.load(file)
-
-    cached_titles = {title for title, url in cached_games}
-    new_titles = {title for title, url in new_games}
-
-    added_games = [game for game in new_games if game[0] not in cached_titles]
-
-    if added_games:
-        callback(added_games)
-    else:
-        print("No new games found.")
 
 if __name__ == "__main__":
     # Example usage
